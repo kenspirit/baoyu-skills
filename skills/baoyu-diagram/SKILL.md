@@ -18,6 +18,29 @@ bun {baseDir}/scripts/theme-switch.ts <svg-path> --theme=light [--output=<path>]
 
 This produces a light-themed SVG without modifying the original dark-themed source. The LLM should always generate SVGs using CSS variable references (e.g., `var(--bg)`, `var(--color-primary-fill)`) instead of hardcoded color values.
 
+### Theme Files ({baseDir}/themes/)
+
+Theme color values live in `{baseDir}/themes/<name>.json` — one flat JSON object per theme, mapping CSS custom property names (keys starting with `--`) to color values. Other keys (e.g. `"description"`) are allowed as metadata and ignored by the scripts. Built-in themes: `dark.json`, `light.json`.
+
+**Custom themes:** anyone can extend the skill by dropping a new `.json` file into `themes/` — no script changes needed:
+
+```json
+// themes/my-brand.json
+{
+  "description": "Corporate brand theme",
+  "--bg": "#ffffff",
+  "--text": "#1a1a2e",
+  "--text-muted": "#6b7280",
+  "--arrow": "#9ca3af",
+  "--color-primary-fill": "rgba(37,99,235,0.12)",
+  "--color-primary-stroke": "#2563eb",
+  "--color-secondary-fill": "rgba(22,163,74,0.12)",
+  "--color-secondary-stroke": "#16a34a"
+}
+```
+
+Then apply it with `--theme=my-brand` (both `theme-switch.ts` and `flatten-vars.ts` support this). Any variable omitted from a custom theme simply won't be replaced by that theme. When generating SVGs for a custom theme, use its variable values in the `:root` block.
+
 ### CSS Custom Properties Reference
 
 These variables are defined in the `:root` block. **Never hardcode color values** — always use `var(--variable-name)` in SVG attributes.
@@ -263,6 +286,9 @@ ${BUN_X} {baseDir}/scripts/theme-switch.ts <svg-path> --theme=light --output=pat
 
 # Generate dark theme explicitly
 ${BUN_X} {baseDir}/scripts/theme-switch.ts <svg-path> --theme=dark
+
+# Use a custom theme (from {baseDir}/themes/<name>.json)
+${BUN_X} {baseDir}/scripts/theme-switch.ts <svg-path> --theme=my-brand
 ```
 
 The script reads the SVG, finds the `:root { ... }` CSS custom property definitions in the `<style>` block, and replaces them with the target theme's color values. All `var(--variable)` references in the SVG markup remain unchanged — only the definitions are swapped.
@@ -297,10 +323,11 @@ Options:
 The PNG converter uses `sharp` (librsvg), which does **not** resolve CSS `var()` references — a variable-based SVG renders as a solid dark image (or black) in the output PNG. Before running `main.ts` on any SVG that contains `var(...)` references, flatten the variables to literal values first:
 
 ```bash
-${BUN_X} {baseDir}/scripts/flatten-vars.ts <svg-path> <output-path>
+${BUN_X} {baseDir}/scripts/flatten-vars.ts <svg-path> <output-path> [--theme=<name>]
 ```
 
-- Replaces every `var(--xxx)` reference with the matching light-theme literal value and strips the `:root` block
+- Replaces every `var(--xxx)` reference with the matching theme's literal value (default theme: `light`) and strips the `:root` block
+- `--theme=<name>` loads `{baseDir}/themes/<name>.json` — custom themes work here too (e.g. flatten with `--theme=my-brand` for a custom-theme PNG)
 - Then run `main.ts` on the flattened file to produce the PNG
 - Browser rendering of the variable-based SVG is unaffected — flattening is only needed for non-browser renderers (sharp/librsvg, some thumbnailers)
 - If the SVG already uses hardcoded colors (legacy diagrams), flattening is unnecessary

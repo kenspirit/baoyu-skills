@@ -7,70 +7,69 @@
  * references in the SVG markup remain unchanged — only the definitions are swapped.
  *
  * Usage:
- *   bun theme-switch.ts <svg-path> --theme=dark|light [--output=<path>]
+ *   bun theme-switch.ts <svg-path> --theme=<name> [--output=<path>] [--validate]
+ *
+ * Themes are JSON files in {skillDir}/themes/ (e.g. dark.json, light.json).
+ * Each file is a flat object mapping CSS custom property names (keys starting
+ * with `--`) to color values; other keys (e.g. "description") are ignored.
+ * Add a new .json file there to create a custom theme, then use --theme=<name>.
  *
  * Example:
  *   bun theme-switch.ts diagram.svg --theme=light
  *   bun theme-switch.ts diagram.svg --theme=light --output=diagram-light.svg
+ *   bun theme-switch.ts diagram.svg --theme=my-brand
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
 import { resolve, dirname } from 'path';
 
-// ─── Theme Color Maps ────────────────────────────────────────────────────────
-// Dark theme (default) — matches the original skill.md color palette
-// Light theme — adjusted for light backgrounds (lower opacity fills, deeper strokes)
+// ─── Theme Loading ──────────────────────────────────────────────────────
+// Theme color maps live in {skillDir}/themes/<name>.json — one flat JSON
+// object mapping CSS custom property names (keys starting with `--`) to
+// color values. Extra metadata keys (not starting with `--`) are ignored.
 
-const themes: Record<'dark' | 'light', Record<string, string>> = {
-  dark: {
-    '--bg': '#0f172a',
-    '--bg-grid': '#1e293b',
-    '--mask': '#0f172a',
-    '--text': 'white',
-    '--text-muted': '#94a3b8',
-    '--arrow': '#64748b',
-    '--color-primary-fill': 'rgba(8,51,68,0.4)',
-    '--color-primary-stroke': '#22d3ee',
-    '--color-secondary-fill': 'rgba(6,78,59,0.4)',
-    '--color-secondary-stroke': '#34d399',
-    '--color-tertiary-fill': 'rgba(76,29,149,0.4)',
-    '--color-tertiary-stroke': '#a78bfa',
-    '--color-accent-fill': 'rgba(120,53,15,0.3)',
-    '--color-accent-stroke': '#fbbf24',
-    '--color-alert-fill': 'rgba(136,19,55,0.4)',
-    '--color-alert-stroke': '#fb7185',
-    '--color-connector-fill': 'rgba(251,146,60,0.3)',
-    '--color-connector-stroke': '#fb923c',
-    '--color-neutral-fill': 'rgba(30,41,59,0.5)',
-    '--color-neutral-stroke': '#94a3b8',
-    '--color-highlight-fill': 'rgba(59,130,246,0.3)',
-    '--color-highlight-stroke': '#60a5fa',
-  },
-  light: {
-    '--bg': '#f8fafc',
-    '--bg-grid': '#e2e8f0',
-    '--mask': '#f8fafc',
-    '--text': '#0f172a',
-    '--text-muted': '#475569',
-    '--arrow': '#64748b',
-    '--color-primary-fill': 'rgba(6,182,212,0.12)',
-    '--color-primary-stroke': '#0891b2',
-    '--color-secondary-fill': 'rgba(5,150,105,0.12)',
-    '--color-secondary-stroke': '#059669',
-    '--color-tertiary-fill': 'rgba(124,58,237,0.12)',
-    '--color-tertiary-stroke': '#7c3aed',
-    '--color-accent-fill': 'rgba(217,119,6,0.12)',
-    '--color-accent-stroke': '#d97706',
-    '--color-alert-fill': 'rgba(225,29,72,0.12)',
-    '--color-alert-stroke': '#e11d48',
-    '--color-connector-fill': 'rgba(234,88,12,0.12)',
-    '--color-connector-stroke': '#ea580c',
-    '--color-neutral-fill': 'rgba(100,116,139,0.12)',
-    '--color-neutral-stroke': '#64748b',
-    '--color-highlight-fill': 'rgba(59,130,246,0.12)',
-    '--color-highlight-stroke': '#3b82f6',
-  },
-};
+const THEMES_DIR = resolve(dirname(process.argv[1]), '..', 'themes');
+
+function listThemes(): string[] {
+  try {
+    return readdirSync(THEMES_DIR)
+      .filter(f => f.endsWith('.json'))
+      .map(f => f.replace(/\.json$/, ''))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+function loadTheme(name: string): Record<string, string> {
+  const themePath = resolve(THEMES_DIR, `${name}.json`);
+  if (!existsSync(themePath)) {
+    console.error(`Error: Theme not found: ${name}`);
+    console.error(`Available themes: ${listThemes().join(', ') || '(none)'}`);
+    console.error(`To add a custom theme, create: ${themePath}`);
+    process.exit(1);
+  }
+  try {
+    const raw = JSON.parse(readFileSync(themePath, 'utf-8')) as Record<string, unknown>;
+    const vars: Record<string, string> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (!key.startsWith('--')) continue; // metadata, ignored
+      if (typeof value !== 'string') {
+        console.error(`Error: Theme "${name}" variable ${key} must be a string value`);
+        process.exit(1);
+      }
+      vars[key] = value;
+    }
+    if (Object.keys(vars).length === 0) {
+      console.error(`Error: Theme "${name}" contains no CSS custom properties (keys starting with "--")`);
+      process.exit(1);
+    }
+    return vars;
+  } catch (e) {
+    console.error(`Error: Failed to parse theme file: ${themePath}\n${e}`);
+    process.exit(1);
+  }
+}
 
 // ─── Core Logic ──────────────────────────────────────────────────────────────
 
@@ -78,9 +77,7 @@ const themes: Record<'dark' | 'light', Record<string, string>> = {
  * Apply a theme to SVG content by replacing CSS custom property definitions
  * inside the `:root { ... }` block within a `<style>` element.
  */
-function applyTheme(svgContent: string, themeName: 'dark' | 'light'): string {
-  const vars = themes[themeName];
-
+function applyTheme(svgContent: string, vars: Record<string, string>): string {
   // Build the replacement :root block
   const rootLines = Object.entries(vars)
     .map(([key, value]) => `    ${key}: ${value};`)
@@ -116,8 +113,8 @@ function applyTheme(svgContent: string, themeName: 'dark' | 'light'): string {
  * Validate that all CSS variable references in the SVG match defined variables.
  * Helps catch typos or missing variable definitions.
  */
-function validateVariables(svgContent: string, themeName: 'dark' | 'light'): string[] {
-  const definedVars = new Set(Object.keys(themes[themeName]));
+function validateVariables(svgContent: string, vars: Record<string, string>): string[] {
+  const definedVars = new Set(Object.keys(vars));
   const referencedVars = new Set<string>();
 
   // Find all var(--xxx) references
@@ -135,7 +132,7 @@ function validateVariables(svgContent: string, themeName: 'dark' | 'light'): str
 
 function parseArgs(argv: string[]): {
   svgPath?: string;
-  theme?: 'dark' | 'light';
+  theme?: string;
   output?: string;
   validate?: boolean;
 } {
@@ -151,11 +148,11 @@ function parseArgs(argv: string[]): {
       continue;
     }
 
-    // --theme=dark or --theme light
+    // --theme=<name> or --theme <name> (any theme in {skillDir}/themes/)
     if (arg.startsWith('--theme=')) {
-      result.theme = arg.split('=')[1] as 'dark' | 'light';
+      result.theme = arg.split('=')[1];
     } else if (arg === '--theme' && args[i + 1]) {
-      result.theme = args[++i] as 'dark' | 'light';
+      result.theme = args[++i];
     }
 
     // --output=path
@@ -179,17 +176,18 @@ function main(): void {
 
   // Validate inputs
   if (!args.svgPath) {
-    console.error('Usage: theme-switch.ts <svg-path> [--theme=dark|light] [--output=<path>] [--validate]');
+    console.error('Usage: theme-switch.ts <svg-path> [--theme=<name>] [--output=<path>] [--validate]');
     console.error('');
     console.error('Arguments:');
     console.error('  <svg-path>          Path to the input SVG file');
-    console.error('  --theme=dark|light  Target theme (default: dark)');
+    console.error(`  --theme=<name>      Target theme from {skillDir}/themes/ (default: dark; available: ${listThemes().join(', ') || 'none'})`);
     console.error('  --output=<path>     Custom output path');
     console.error('  --validate          Check for undefined CSS variable references');
     process.exit(1);
   }
 
-  const theme: 'dark' | 'light' = args.theme || 'dark';
+  const theme: string = args.theme || 'dark';
+  const themeVars = loadTheme(theme);
   const svgPath = resolve(args.svgPath);
 
   if (!existsSync(svgPath)) {
@@ -207,20 +205,20 @@ function main(): void {
 
   // Optional validation
   if (args.validate) {
-    const missing = validateVariables(svgContent, theme);
+    const missing = validateVariables(svgContent, themeVars);
     if (missing.length > 0) {
       console.error('Warning: The following CSS variables are referenced but not defined:');
       missing.forEach(v => console.error(`  - ${v}`));
       console.error('');
       console.error('Defined variables:');
-      Object.keys(themes[theme]).forEach(v => console.error(`  - ${v}`));
+      Object.keys(themeVars).forEach(v => console.error(`  - ${v}`));
       process.exit(1);
     }
     console.log('Validation passed: all CSS variable references are defined.');
   }
 
   // Apply theme
-  const result = applyTheme(svgContent, theme);
+  const result = applyTheme(svgContent, themeVars);
 
   // Determine output path
   const outputDir = args.output ? dirname(args.output) : dirname(svgPath);
@@ -233,7 +231,7 @@ function main(): void {
 
   console.log(`Theme "${theme}" applied successfully: ${outputPath}`);
   console.log(`  Source: ${svgPath}`);
-  console.log(`  Variables replaced: ${Object.keys(themes[theme]).length}`);
+  console.log(`  Variables replaced: ${Object.keys(themeVars).length}`);
 }
 
 main();
